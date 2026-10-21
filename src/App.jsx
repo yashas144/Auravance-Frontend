@@ -1595,7 +1595,7 @@ function MonitoringScreen({
               <strong>No telemetry from this asset yet</strong>
               <span>
                 Nothing is streaming to {selectedAsset?.name ?? "this asset"} yet. Start{" "}
-                <code>backend/scripts/replay_telemetry.py</code> to stream live data to every registered asset; new
+                <code>scripts/replay_telemetry.py</code> in the backend repo to stream live data to every registered asset; new
                 assets are picked up within a minute.
               </span>
             </section>
