@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
+import ExecutiveDashboard from "./ExecutiveDashboard";
+import DefectManagement from "./DefectManagement";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 const SESSION_STORAGE_KEY = "auravance.currentUser";
 
 const NAV_ITEMS = [
+  { id: "executive", label: "Executive", group: "Operations" },
   { id: "monitoring", label: "Monitoring", group: "Operations" },
   { id: "rootcause", label: "Root Cause Analysis", group: "Operations" },
+  { id: "inspections", label: "Field Inspections", group: "Operations" },
   { id: "plants", label: "Plant Info", group: "Master Data" },
   { id: "equipment", label: "Equipment Master", group: "Master Data" },
   { id: "vendors", label: "Vendor Management", group: "Master Data" },
   { id: "schedules", label: "Maintenance Schedules", group: "Execution" },
   { id: "workorders", label: "Work Order Mgmt", group: "Execution" },
-  { id: "defects", label: "Defects View", group: "Execution" },
+  { id: "defects", label: "Defect Management", group: "Execution" },
   { id: "users", label: "User Mgmt", group: "Admin" },
 ];
 
@@ -53,6 +57,7 @@ function sortAssets(assets) {
 const REPLAY_SOURCES = new Set(["dataset-replay", "pump-replay"]);
 const VENDOR_TYPES = ["OEM", "Service Partner", "Parts Supplier", "Calibration Vendor"];
 const USER_ROLES = ["Admin", "Plant Manager", "Maintenance Planner", "Reliability Engineer", "Technician", "Viewer"];
+const TASK_STATUSES = ["Open", "In Progress", "Blocked", "Completed"];
 
 const INITIAL_PLANTS = [
   {
@@ -467,6 +472,11 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-17",
     status: "Open",
     summary: "Elevated vibration and heat trend exceeded warning threshold.",
+    tasks: [
+      { id: "task-2041-1", description: "Lock out compressor and inspect the drive-end bearing housing.", status: "Open" },
+      { id: "task-2041-2", description: "Record vibration and temperature at the bearing cap.", status: "In Progress" },
+      { id: "task-2041-3", description: "Issue findings to reliability for follow-up lubrication plan.", status: "Open" },
+    ],
   },
   {
     id: "wo-2042",
@@ -479,6 +489,10 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-19",
     status: "In Progress",
     summary: "Current draw is rising during peak packaging shifts.",
+    tasks: [
+      { id: "task-2042-1", description: "Capture motor current during peak packaging shift.", status: "In Progress" },
+      { id: "task-2042-2", description: "Compare load profile against last healthy baseline.", status: "Open" },
+    ],
   },
   {
     id: "wo-2043",
@@ -491,6 +505,10 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-17",
     status: "Waiting Parts",
     summary: "Seal leakage risk is increasing and spare kit is in transit from FlowCore Industrial.",
+    tasks: [
+      { id: "task-2043-1", description: "Stage mechanical seal kit at Pump 04 once parts arrive.", status: "Blocked" },
+      { id: "task-2043-2", description: "Isolate pump and drain casing before seal replacement.", status: "Open" },
+    ],
   },
   {
     id: "wo-2044",
@@ -503,6 +521,10 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-22",
     status: "Open",
     summary: "Quarterly calibration due for dual pressure transmitters and flow interlock verification.",
+    tasks: [
+      { id: "task-2044-1", description: "Calibrate dual pressure transmitters on Cooling Skid 03.", status: "Open" },
+      { id: "task-2044-2", description: "Verify flow interlock after transmitter calibration.", status: "Open" },
+    ],
   },
   {
     id: "wo-2045",
@@ -515,6 +537,10 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-20",
     status: "Open",
     summary: "Thermal trend suggests reduced airflow near the motor housing during second shift.",
+    tasks: [
+      { id: "task-2045-1", description: "Inspect conveyor motor fan shroud for obstruction.", status: "Open" },
+      { id: "task-2045-2", description: "Clean housing and confirm airflow during second shift.", status: "Open" },
+    ],
   },
   {
     id: "wo-2046",
@@ -527,6 +553,10 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-18",
     status: "In Progress",
     summary: "Momentary bus instability was observed during a synchronized startup sequence on blend hall equipment.",
+    tasks: [
+      { id: "task-2046-1", description: "Capture harmonic distortion trace during synchronized startup.", status: "In Progress" },
+      { id: "task-2046-2", description: "Review drive settings with controls after the event window.", status: "Open" },
+    ],
   },
   {
     id: "wo-2047",
@@ -539,6 +569,10 @@ const INITIAL_WORK_ORDERS = [
     dueDate: "2026-05-24",
     status: "Open",
     summary: "Separator differential pressure is trending upward and requires planned downtime replacement.",
+    tasks: [
+      { id: "task-2047-1", description: "Plan shutdown window for oil separator replacement.", status: "Open" },
+      { id: "task-2047-2", description: "Prepare separator spare and gasket set before downtime.", status: "Open" },
+    ],
   },
 ];
 
@@ -760,6 +794,7 @@ const EMPTY_WORK_ORDER_FORM = {
   dueDate: "",
   status: "Open",
   summary: "",
+  tasks: [],
 };
 
 const EMPTY_DEFECT_FORM = {
@@ -829,6 +864,11 @@ function formatNumber(value, digits = 2) {
   return Number(value).toFixed(digits);
 }
 
+function formatSignalName(value) {
+  if (!value) return "--";
+  return String(value).replaceAll("_", " ");
+}
+
 function statusTone(label) {
   if (label === "high-risk") return "critical";
   if (label === "warning") return "warning";
@@ -866,6 +906,36 @@ async function writeJson(path, method, payload) {
     headers: { "Content-Type": "application/json" },
     body: payload ? JSON.stringify(payload) : undefined,
   });
+}
+
+async function uploadBinary(path, file) {
+  const token = getStoredAccessToken();
+  const headers = new Headers();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: "POST", headers, body });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = payload?.detail ? ` - ${payload.detail}` : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(`Request failed: ${response.status} for ${path}${detail}`);
+  }
+  return response.json();
+}
+
+function toDatetimeLocal(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function gradientId(label) {
@@ -1044,6 +1114,11 @@ function mapWorkOrderFromApi(item) {
     dueDate: item.due_date,
     status: item.status,
     summary: item.summary,
+    tasks: (item.tasks ?? []).map((task) => ({
+      id: task.task_id,
+      description: task.description,
+      status: task.status,
+    })),
   };
 }
 
@@ -1059,6 +1134,11 @@ function mapWorkOrderToApi(form, selectedId) {
     due_date: form.dueDate,
     status: form.status,
     summary: form.summary,
+    tasks: (form.tasks ?? []).map((task) => ({
+      task_id: task.id || undefined,
+      description: task.description,
+      status: task.status,
+    })),
   };
 }
 
@@ -1236,11 +1316,11 @@ function SideNavigation({ activeView, onSelect, currentUser, onLogout }) {
   );
 }
 
-function StatCard({ label, value, subvalue, tone = "default" }) {
+function StatCard({ label, value, subvalue, tone = "default", valueKind = "metric" }) {
   return (
     <section className={`stat-card tone-${tone}`}>
       <span className="stat-label">{label}</span>
-      <strong className="stat-value">{value}</strong>
+      <strong className={`stat-value ${valueKind === "text" ? "stat-value-text" : ""}`}>{value}</strong>
       <span className="stat-subvalue">{subvalue}</span>
     </section>
   );
@@ -1573,7 +1653,7 @@ function MonitoringScreen({
               value={prediction ? formatNumber(prediction.anomaly_score) : "--"}
               subvalue={
                 prediction?.dominant_signal
-                  ? `Dominant signal: ${prediction.dominant_signal}`
+                  ? `Dominant signal: ${formatSignalName(prediction.dominant_signal)}`
                   : "Waiting for inference"
               }
               tone={prediction ? statusTone(prediction.anomaly_label) : "default"}
@@ -1592,33 +1672,29 @@ function MonitoringScreen({
 
           {!latestTelemetry && lastUpdated && !error ? (
             <section className="replay-banner">
-              <strong>No telemetry from this asset yet</strong>
+              <strong>Waiting for live telemetry</strong>
               <span>
-                Nothing is streaming to {selectedAsset?.name ?? "this asset"} yet. Start{" "}
-                <code>scripts/replay_telemetry.py</code> in the backend repo to stream live data to every registered asset; new
-                assets are picked up within a minute.
+                No sensor readings have arrived for {selectedAsset?.name ?? "this asset"} yet. Start the backend
+                telemetry simulator to begin streaming live simulated data.
               </span>
             </section>
           ) : null}
 
           {replay ? (
             <section className="replay-banner">
-              <strong>Replaying real recorded data</strong>
+              <strong>Live simulated sensor data</strong>
               <span>
-                {replay.dataset_label ?? "Kaggle pump sensor dataset"} {"\u00b7"} episode {replay.episode_id}{" "}
-                {"\u00b7"} recorded {replay.source_timestamp}
+                Streaming simulated telemetry for {selectedAsset?.name ?? "this asset"}. Channel values update as new
+                readings arrive.
               </span>
-              <span>
-                Ground truth at this moment:{" "}
-                <span className={`replay-status status-${String(replay.machine_status).toLowerCase()}`}>
-                  {replay.machine_status}
+              {replay.machine_status ? (
+                <span>
+                  Current condition:{" "}
+                  <span className={`replay-status status-${String(replay.machine_status).toLowerCase()}`}>
+                    {replay.machine_status}
+                  </span>
                 </span>
-              </span>
-              <span className="replay-note">
-                {realUnits
-                  ? "Values are in the real units recorded on the machine; channels the dataset doesn't measure are marked."
-                  : "Channels are anonymized in the source dataset, so raw values are shown without units."}
-              </span>
+              ) : null}
             </section>
           ) : null}
 
@@ -1744,9 +1820,10 @@ function RootCauseAnalysisScreen({
             />
             <StatCard
               label="Dominant signal"
-              value={prediction?.dominant_signal ?? "--"}
+              value={formatSignalName(prediction?.dominant_signal)}
               subvalue="retrieval driver"
               tone={prediction ? statusTone(prediction.anomaly_label) : "default"}
+              valueKind="text"
             />
             <StatCard
               label="Embedded chunks"
@@ -2173,6 +2250,26 @@ function MaintenanceSchedulesScreen({ schedules }) {
 }
 
 function WorkOrdersScreen({ workOrders, selectedWorkOrderId, onSelect, onDelete, form, onChange, onSave, onReset }) {
+  const tasks = form.tasks ?? [];
+
+  function updateTask(taskId, field, value) {
+    onChange(
+      "tasks",
+      tasks.map((task) => (task.id === taskId ? { ...task, [field]: value } : task)),
+    );
+  }
+
+  function addTask() {
+    onChange("tasks", [...tasks, { id: nextId("task"), description: "", status: "Open" }]);
+  }
+
+  function removeTask(taskId) {
+    onChange(
+      "tasks",
+      tasks.filter((task) => task.id !== taskId),
+    );
+  }
+
   return (
     <>
       <SectionHeader
@@ -2257,6 +2354,51 @@ function WorkOrdersScreen({ workOrders, selectedWorkOrderId, onSelect, onDelete,
               <textarea rows="5" value={form.summary} onChange={(event) => onChange("summary", event.target.value)} />
             </FormField>
           </div>
+
+          <section className="work-order-tasks">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Tasks</p>
+                <h3>Work order tasks</h3>
+              </div>
+              <button type="button" className="secondary-button" onClick={addTask}>
+                Add Task
+              </button>
+            </div>
+            {tasks.length === 0 ? (
+              <p className="panel-empty">No tasks on this work order yet. Add a task to break the job into steps.</p>
+            ) : (
+              <div className="task-grid">
+                {tasks.map((task) => (
+                  <article key={task.id} className="task-card">
+                    <FormField label="Task ID">
+                      <input value={task.id} readOnly />
+                    </FormField>
+                    <FormField label="Task Description">
+                      <textarea
+                        rows="3"
+                        value={task.description}
+                        onChange={(event) => updateTask(task.id, "description", event.target.value)}
+                      />
+                    </FormField>
+                    <FormField label="Status">
+                      <select value={task.status} onChange={(event) => updateTask(task.id, "status", event.target.value)}>
+                        {TASK_STATUSES.map((status) => (
+                          <option key={status} value={status}>
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+                    </FormField>
+                    <button type="button" className="subtle-button" onClick={() => removeTask(task.id)}>
+                      Remove
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+
           <CrudActions
             selectedId={selectedWorkOrderId}
             addLabel="Add Work Order"
@@ -2464,8 +2606,377 @@ function UsersScreen({ users, selectedUserId, onSelect, onDelete, form, onChange
   );
 }
 
+function FieldInspectionsScreen({ assets, selectedAssetId, onSelectAsset }) {
+  const [tab, setTab] = useState("dashboard");
+  const [summary, setSummary] = useState(null);
+  const [records, setRecords] = useState([]);
+  const [inspection, setInspection] = useState(null);
+  const [responses, setResponses] = useState({});
+  const [telemetry, setTelemetry] = useState([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const items = inspection?.snapshot?.template?.items ?? [];
+
+  async function refreshLists() {
+    const [dashboard, list] = await Promise.all([
+      readJson("/inspections/summary"),
+      readJson("/inspections?limit=50"),
+    ]);
+    setSummary(dashboard);
+    setRecords(list);
+  }
+
+  useEffect(() => {
+    refreshLists().catch((err) => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    if (!inspection?.asset_id || inspection.status === "draft") {
+      setTelemetry([]);
+      return;
+    }
+    readJson(`/telemetry/assets/${encodeURIComponent(inspection.asset_id)}/history?limit=8`)
+      .then(setTelemetry)
+      .catch(() => setTelemetry([]));
+  }, [inspection?.asset_id, inspection?.status]);
+
+  function hydrate(detail) {
+    setInspection(detail);
+    const next = {};
+    for (const row of detail.responses ?? []) {
+      next[row.item_id] = {
+        value: row.value,
+        notes: row.notes ?? "",
+        attachment_path: row.attachment_path,
+      };
+    }
+    setResponses(next);
+  }
+
+  function updateResponse(itemId, field, value) {
+    setResponses((current) => ({
+      ...current,
+      [itemId]: { ...(current[itemId] ?? {}), [field]: value },
+    }));
+  }
+
+  async function startInspection() {
+    if (!selectedAssetId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const created = await writeJson("/inspections", "POST", { asset_id: selectedAssetId });
+      hydrate(created);
+      setTab("execute");
+      await refreshLists();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveDraft() {
+    if (!inspection) return;
+    setBusy(true);
+    setError("");
+    try {
+      const payload = items.map((item) => {
+        const row = responses[item.item_id] ?? {};
+        let value = row.value;
+        if (item.item_type === "datetime" && value) {
+          value = new Date(value).toISOString();
+        }
+        if (item.item_type === "numeric" && value !== "" && value != null) {
+          value = Number(value);
+        }
+        return {
+          item_id: item.item_id,
+          value: item.item_type === "photo" ? null : value ?? null,
+          notes: row.notes || null,
+          attachment_path: row.attachment_path || null,
+        };
+      });
+      hydrate(await writeJson(`/inspections/${inspection.inspection_id}`, "PUT", { responses: payload }));
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitInspection() {
+    if (!inspection) return;
+    const saved = await saveDraft();
+    if (!saved) return;
+    setBusy(true);
+    setError("");
+    try {
+      hydrate(await writeJson(`/inspections/${inspection.inspection_id}/submit`, "POST"));
+      await refreshLists();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewInspection(status) {
+    if (!inspection) return;
+    setBusy(true);
+    setError("");
+    try {
+      hydrate(await writeJson(`/inspections/${inspection.inspection_id}/review`, "POST", { status }));
+      await refreshLists();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openInspection(inspectionId) {
+    setBusy(true);
+    setError("");
+    try {
+      hydrate(await readJson(`/inspections/${inspectionId}`));
+      setTab("execute");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadPhoto(itemId, file) {
+    if (!inspection || !file) return;
+    setBusy(true);
+    setError("");
+    try {
+      hydrate(await uploadBinary(`/inspections/${inspection.inspection_id}/items/${itemId}/photo`, file));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function itemTone(itemId) {
+    const row = (inspection?.responses ?? []).find((entry) => entry.item_id === itemId);
+    if (row?.severity === "critical" || row?.status === "fail") return "fail";
+    if (row?.status === "incomplete") return "incomplete";
+    return "ok";
+  }
+
+  return (
+    <>
+      <SectionHeader
+        eyebrow="Operations"
+        title="Field Inspections"
+        description="Walkaround checklists for pumps, compressors, and motors. Findings are operator observations, not 72-hour model predictions. Numeric bands are demo defaults, not OEM limits."
+      />
+      {error ? <div className="error-banner">{error}</div> : null}
+      <div className="inspection-tabs">
+        {[
+          ["dashboard", "Dashboard"],
+          ["execute", "Execute"],
+          ["history", "History"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={tab === id ? "primary-button" : "secondary-button"}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "dashboard" ? (
+        <section className="stats-grid">
+          <StatCard label="Total" value={summary?.total ?? 0} subvalue="recent window" />
+          <StatCard label="Completed" value={summary?.completed ?? 0} subvalue="submitted or reviewed" tone="healthy" />
+          <StatCard label="Pending drafts" value={summary?.pending ?? 0} subvalue="not submitted" />
+          <StatCard label="Failed" value={summary?.failed ?? 0} subvalue="checklist findings" tone="critical" />
+          <StatCard label="Critical findings" value={summary?.critical_findings ?? 0} subvalue="field inspection alerts" tone="critical" />
+        </section>
+      ) : null}
+
+      {tab === "execute" ? (
+        <section className="crud-layout">
+          <section className="panel">
+            <div className="panel-header">
+              <p className="eyebrow">Start</p>
+              <h3>Select asset</h3>
+            </div>
+            <FormField label="Asset">
+              <select value={selectedAssetId} onChange={(event) => onSelectAsset(event.target.value)}>
+                {sortAssets(assets).map((asset) => (
+                  <option key={asset.asset_id} value={asset.asset_id}>
+                    {asset.name} ({asset.asset_type})
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <div className="form-actions">
+              <button type="button" className="primary-button" disabled={busy || !selectedAssetId} onClick={startInspection}>
+                Start inspection
+              </button>
+            </div>
+          </section>
+          <section className="panel form-panel">
+            <div className="panel-header">
+              <p className="eyebrow">{inspection?.status ?? "idle"}</p>
+              <h3>{inspection?.snapshot?.template?.name ?? "No draft open"}</h3>
+            </div>
+            {inspection ? (
+              <>
+                <p className="inspection-limits-note">
+                  Result {inspection.result}. Limits in this checklist are illustrative defaults.
+                </p>
+                {items.map((item) => {
+                  const row = responses[item.item_id] ?? {};
+                  const options = item.rules?.options ?? [];
+                  return (
+                    <div key={item.item_id} className={`checklist-item tone-${itemTone(item.item_id)}`}>
+                      <strong>
+                        {item.label}
+                        {item.required ? " *" : ""}
+                      </strong>
+                      <span>
+                        {item.section}
+                        {item.rules?.unit ? ` · ${item.rules.accepted_min ?? "—"}–${item.rules.accepted_max ?? "—"} ${item.rules.unit}` : ""}
+                      </span>
+                      {item.item_type === "numeric" ? (
+                        <input
+                          type="number"
+                          disabled={inspection.status !== "draft"}
+                          value={row.value ?? ""}
+                          onChange={(event) => updateResponse(item.item_id, "value", event.target.value)}
+                        />
+                      ) : null}
+                      {item.item_type === "datetime" ? (
+                        <input
+                          type="datetime-local"
+                          disabled={inspection.status !== "draft"}
+                          value={toDatetimeLocal(row.value)}
+                          onChange={(event) => updateResponse(item.item_id, "value", event.target.value)}
+                        />
+                      ) : null}
+                      {options.length ? (
+                        <select
+                          disabled={inspection.status !== "draft"}
+                          value={row.value ?? ""}
+                          onChange={(event) => updateResponse(item.item_id, "value", event.target.value)}
+                        >
+                          <option value="">Select</option>
+                          {options.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      {item.item_type === "text" ? (
+                        <textarea
+                          disabled={inspection.status !== "draft"}
+                          value={row.notes || row.value || ""}
+                          onChange={(event) => updateResponse(item.item_id, "notes", event.target.value)}
+                        />
+                      ) : null}
+                      {item.item_type === "photo" ? (
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={inspection.status !== "draft"}
+                          onChange={(event) => uploadPhoto(item.item_id, event.target.files?.[0])}
+                        />
+                      ) : null}
+                      {row.attachment_path ? <small>Photo stored</small> : null}
+                    </div>
+                  );
+                })}
+                <div className="form-actions">
+                  {inspection.status === "draft" ? (
+                    <>
+                      <button type="button" className="secondary-button" disabled={busy} onClick={saveDraft}>
+                        Save draft
+                      </button>
+                      <button type="button" className="primary-button" disabled={busy} onClick={submitInspection}>
+                        Submit
+                      </button>
+                    </>
+                  ) : null}
+                  {inspection.status === "submitted" ? (
+                    <button type="button" className="primary-button" disabled={busy} onClick={() => reviewInspection("reviewed")}>
+                      Mark reviewed
+                    </button>
+                  ) : null}
+                </div>
+                {telemetry.length ? (
+                  <div className="inspection-historian">
+                    <p className="eyebrow">Nearby telemetry</p>
+                    {telemetry.slice(-4).map((point) => (
+                      <span key={point.timestamp}>
+                        {formatDate(point.timestamp)} · T {formatNumber(point.temperature_c)} · V {formatNumber(point.vibration_rms, 3)}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {inspection.alerts?.length ? (
+                  <div className="inspection-historian">
+                    <p className="eyebrow">Field findings</p>
+                    {inspection.alerts.map((alert) => (
+                      <span key={alert.alert_id}>{alert.severity}: {alert.message}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <p>Start a draft to load the snapshot checklist for this asset type.</p>
+            )}
+          </section>
+        </section>
+      ) : null}
+
+      {tab === "history" || tab === "dashboard" ? (
+        <section className="panel">
+          <div className="panel-header">
+            <p className="eyebrow">Recent inspections</p>
+          </div>
+          <div className="record-list">
+            {(tab === "dashboard" ? summary?.recent ?? records : records).map((row) => (
+              <article key={row.inspection_id} className="record-card">
+                <button type="button" className="record-card-main" onClick={() => openInspection(row.inspection_id)}>
+                  <strong>
+                    {row.asset_id} · {row.result}
+                  </strong>
+                  <p>
+                    {row.status} · {row.category} · {row.inspector_name || "unassigned"}
+                  </p>
+                  <span>{formatDate(row.created_at)}</span>
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
 function App() {
-  const [activeView, setActiveView] = useState("monitoring");
+  const [activeView, setActiveView] = useState("executive");
+  const [executiveSummary, setExecutiveSummary] = useState(null);
+  const [executivePlantId, setExecutivePlantId] = useState("");
+  const [executiveWindowHours, setExecutiveWindowHours] = useState(24);
+  const [executiveLoading, setExecutiveLoading] = useState(false);
+  const [executiveError, setExecutiveError] = useState("");
+  const [executiveTick, setExecutiveTick] = useState(0);
   const [currentUser, setCurrentUser] = useState(getStoredUser);
   const [loginForm, setLoginForm] = useState({
     email: "",
@@ -2663,6 +3174,38 @@ function App() {
   }, [currentUser, isAdmin]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    async function loadExecutive() {
+      setExecutiveLoading(true);
+      try {
+        const params = new URLSearchParams({ window_hours: String(executiveWindowHours) });
+        if (executivePlantId) params.set("plant_id", executivePlantId);
+        const payload = await readJson(`/executive/summary?${params.toString()}`);
+        if (cancelled) return;
+        setExecutiveSummary(payload);
+        setExecutiveError("");
+        if (payload.plant_id && payload.plants?.length === 1) {
+          setExecutivePlantId(payload.plant_id);
+        }
+      } catch (requestError) {
+        console.error("loadExecutive failed:", requestError);
+        if (!cancelled) {
+          setExecutiveError("Unable to load the executive summary. Confirm the API is running.");
+        }
+      } finally {
+        if (!cancelled) setExecutiveLoading(false);
+      }
+    }
+    loadExecutive();
+    const timer = window.setInterval(loadExecutive, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser, executivePlantId, executiveWindowHours, executiveTick]);
+
+  useEffect(() => {
     if (!currentUser?.token) return;
     let cancelled = false;
 
@@ -2732,10 +3275,26 @@ function App() {
     }
 
     loadDashboard();
-    const intervalId = window.setInterval(loadDashboard, 4000);
+    const token = encodeURIComponent(currentUser.token || "");
+    const source = new EventSource(
+      `/api/v1/telemetry/assets/${encodeURIComponent(selectedAssetId)}/stream?access_token=${token}`,
+    );
+    const onLiveEvent = () => {
+      if (!cancelled) {
+        loadDashboard();
+      }
+    };
+    source.addEventListener("auravance.telemetry.ingested.v1", onLiveEvent);
+    source.addEventListener("auravance.prediction.scored.v1", onLiveEvent);
+    source.addEventListener("auravance.alert.raised.v1", onLiveEvent);
+    source.onerror = () => {
+      if (!cancelled) {
+        setError("Live telemetry stream interrupted. Retrying…");
+      }
+    };
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      source.close();
     };
   }, [selectedAssetId, currentUser]);
 
@@ -2891,8 +3450,29 @@ function App() {
     await loadMasterData();
   }
 
+  function navigateFromExecutive(view, options = {}) {
+    if (options.assetId) {
+      setSelectedAssetId(options.assetId);
+    }
+    setActiveView(view);
+  }
+
   function renderActiveScreen() {
     switch (activeView) {
+      case "executive":
+        return (
+          <ExecutiveDashboard
+            summary={executiveSummary}
+            loading={executiveLoading}
+            error={executiveError}
+            plantId={executivePlantId}
+            windowHours={executiveWindowHours}
+            onPlantChange={setExecutivePlantId}
+            onWindowChange={setExecutiveWindowHours}
+            onRefresh={() => setExecutiveTick((tick) => tick + 1)}
+            onNavigate={navigateFromExecutive}
+          />
+        );
       case "plants":
         return (
           <PlantsScreen
@@ -2978,25 +3558,7 @@ function App() {
           />
         );
       case "defects":
-        return (
-          <DefectsScreen
-            defects={defects}
-            selectedDefectId={selectedDefectId}
-            onSelect={(id) => {
-              const item = defects.find((entry) => entry.id === id);
-              setSelectedDefectId(id);
-              setDefectForm(item ?? EMPTY_DEFECT_FORM);
-            }}
-            onDelete={(id) => performMasterDataAction(() => deleteDefectRecord(id))}
-            form={defectForm}
-            onChange={(field, value) => setDefectForm((current) => ({ ...current, [field]: value }))}
-            onSave={() => performMasterDataAction(saveDefect)}
-            onReset={() => {
-              setSelectedDefectId("");
-              setDefectForm(EMPTY_DEFECT_FORM);
-            }}
-          />
-        );
+        return <DefectManagement assets={assets} onNavigate={navigateFromExecutive} />;
       case "users":
         return (
           <UsersScreen
@@ -3015,6 +3577,14 @@ function App() {
               setSelectedUserId("");
               setUserForm(EMPTY_USER_FORM);
             }}
+          />
+        );
+      case "inspections":
+        return (
+          <FieldInspectionsScreen
+            assets={assets}
+            selectedAssetId={selectedAssetId}
+            onSelectAsset={setSelectedAssetId}
           />
         );
       case "rootcause":
